@@ -81,6 +81,20 @@
     box-shadow: 0 6px 0 #4c9c2a, 0 0 24px rgba(142,240,90,.5);
     touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
   }
+  .steer { border: 0; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+  .steer legend { padding: 0; margin-bottom: 8px; width: 100%; }
+  .steer label {
+    display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 800; font-size: 16px;
+    padding: 10px 14px; border-radius: 12px; background: rgba(255,255,255,.08); border: 2px solid transparent;
+  }
+  .steer label:has(input:checked) { border-color: var(--slime); background: rgba(142,240,90,.14); }
+  .steer input { accent-color: var(--slime); width: 18px; height: 18px; margin: 0; }
+  #recenterBtn {
+    position: fixed; z-index: 7; left: calc(24px + env(safe-area-inset-left, 0px)); bottom: calc(40px + env(safe-area-inset-bottom, 0px));
+    font-family: var(--display); font-weight: 700; font-size: 15px; color: var(--ink);
+    padding: 12px 16px; border-radius: 14px; border: 2px solid rgba(255,255,255,.4); background: var(--panel);
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
   #fireBtn.down { transform: translateY(4px) scale(.96); box-shadow: 0 2px 0 #4c9c2a, 0 0 32px rgba(142,240,90,.8); }
   #joyKnob { position: absolute; left: 50%; top: 50%; width: 46px; height: 46px; margin: -23px 0 0 -23px; border-radius: 50%; background: rgba(142,240,90,.55); }
 
@@ -138,6 +152,7 @@
 <div id="floats"></div>
 <div id="touchUI" hidden>
   <div id="joy"><div id="joyKnob"></div></div>
+  <button id="recenterBtn" type="button" hidden>Re-center tilt</button>
   <button id="fireBtn" type="button" aria-label="Shoot">ZAP</button>
 </div>
 
@@ -156,8 +171,13 @@
       <b>← →</b><span>Turn left and right. In space: fly left and right.</span>
       <b>Space</b><span>Hold to shoot. Aiming is automatic: the shots fly straight to the nearest ghost or elephant.</span>
       <b>Esc · M</b><span>Pause · Sound on/off</span>
-      <b>Phone</b><span>Drag on the left side to walk. Hold the big ZAP button to shoot; aiming is automatic here too. Drag on the right side to look around.</span>
+      <b>Phone</b><span>Choose your steering below. Joystick: drag on the left side to walk. Tilt: tilt the phone left and right to turn, away from you to walk. Hold the big ZAP button to shoot; aiming is automatic here too.</span>
     </div>
+    <fieldset class="steer" hidden>
+      <legend class="label">Steering</legend>
+      <label><input type="radio" name="steerStart" id="steerStartTouch" value="touch" checked> Joystick</label>
+      <label><input type="radio" name="steerStart" id="steerStartTilt" value="tilt"> Tilt the phone</label>
+    </fieldset>
     <button class="go" id="startBtn">Start patrol</button>
   </div>
 </div>
@@ -166,6 +186,11 @@
   <div class="card">
     <h1>Paused</h1>
     <p>The ghosts are waiting for you.</p>
+    <fieldset class="steer" hidden>
+      <legend class="label">Steering</legend>
+      <label><input type="radio" name="steerPause" id="steerPauseTouch" value="touch" checked> Joystick</label>
+      <label><input type="radio" name="steerPause" id="steerPauseTilt" value="tilt"> Tilt the phone</label>
+    </fieldset>
     <button class="go" id="resumeBtn">Keep zapping</button>
   </div>
 </div>
@@ -700,7 +725,7 @@ function clearTransient() {
 
 function fadeTo(next) {
   const f = $('fade'); f.classList.add('on');
-  setTimeout(() => { next(); f.classList.remove('on'); }, 900);
+  setTimeout(() => { next(); tiltBase = null; f.classList.remove('on'); }, 900);
 }
 
 function reset() {
@@ -745,14 +770,17 @@ function look(dx, dy, k) {
 
 const joyEl = $('joy'), knob = $('joyKnob'), fireBtn = $('fireBtn'), touchUI = $('touchUI');
 let fireTouch = false;
-function showTouchUI() { touchUI.hidden = false; }
+function showTouchUI() {
+  touchUI.hidden = false;
+  document.querySelectorAll('.steer').forEach(f => { f.hidden = false; });
+}
 try { if (matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0) showTouchUI(); } catch (e) {}
 canvas.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
 canvas.addEventListener('pointerdown', e => {
   if (e.pointerType === 'mouse') return;
   e.preventDefault(); initAudio(); showTouchUI();
   if (!active() || paused) return;
-  if (e.clientX < innerWidth / 2 && !moveTouch) {
+  if (e.clientX < innerWidth / 2 && !moveTouch && steerMode === 'touch') {
     moveTouch = { id: e.pointerId, x: e.clientX, y: e.clientY };
     joyEl.style.left = e.clientX + 'px'; joyEl.style.top = e.clientY + 'px'; knob.style.transform = '';
     joyEl.classList.add('active');
@@ -796,14 +824,85 @@ function autoTurn(dt) {
   yaw += Math.max(-step, Math.min(step, diff));
 }
 
+// ---------- tilt steering ----------
+let steerMode = 'touch', tiltListening = false, tiltRaw = null, tiltBase = null;
+const tilt = { x: 0, y: 0 };
+try { if (localStorage.getItem('steer') === 'tilt') steerMode = 'tilt'; } catch (e) {}
+
+function syncSteerUI() {
+  for (const p of ['Start', 'Pause']) {
+    $('steer' + p + 'Touch').checked = steerMode === 'touch';
+    $('steer' + p + 'Tilt').checked = steerMode === 'tilt';
+  }
+  $('joy').hidden = steerMode !== 'touch';
+  $('recenterBtn').hidden = steerMode !== 'tilt';
+  if (steerMode !== 'tilt') tilt.x = tilt.y = 0;
+}
+document.querySelectorAll('.steer input').forEach(inp => inp.addEventListener('change', () => {
+  steerMode = inp.value;
+  try { localStorage.setItem('steer', steerMode); } catch (e) {}
+  syncSteerUI();
+}));
+
+function screenAngle() {
+  const a = (screen.orientation && screen.orientation.angle) ?? window.orientation ?? 0;
+  return ((a % 360) + 360) % 360;
+}
+function onOrientation(e) {
+  if (e.beta == null || e.gamma == null) return;
+  const a = screenAngle();
+  let x, y;
+  if (a === 90) { x = e.beta; y = -e.gamma; }
+  else if (a === 270) { x = -e.beta; y = e.gamma; }
+  else if (a === 180) { x = -e.gamma; y = -e.beta; }
+  else { x = e.gamma; y = e.beta; }
+  tiltRaw = { x, y };
+  if (!tiltBase) tiltBase = { x, y };
+}
+function recenterTilt() { tiltBase = tiltRaw ? { ...tiltRaw } : null; }
+addEventListener('orientationchange', () => { tiltBase = null; });
+if (screen.orientation) screen.orientation.addEventListener('change', () => { tiltBase = null; });
+
+const wrap180 = d => ((d + 540) % 360) - 180;
+const tiltAxis = d => Math.sign(d) * clamp((Math.abs(d) - 4) / 16, 0, 1);
+function updateTilt() {
+  if (steerMode !== 'tilt' || !tiltRaw || !tiltBase) { tilt.x = tilt.y = 0; return; }
+  tilt.x = tiltAxis(wrap180(tiltRaw.x - tiltBase.x));
+  tilt.y = tiltAxis(wrap180(tiltBase.y - tiltRaw.y));
+}
+
+function fallBackToTouch(text) {
+  steerMode = 'touch'; syncSteerUI();
+  showMsg(text, 4);
+}
+function enableTilt() {
+  if (steerMode !== 'tilt') return;
+  const listen = () => {
+    if (!tiltListening) { addEventListener('deviceorientation', onOrientation); tiltListening = true; }
+    tiltBase = null;
+    setTimeout(() => { if (steerMode === 'tilt' && !tiltRaw) fallBackToTouch('Tilt steering is not available here, so the joystick is on.'); }, 1500);
+  };
+  try {
+    const D = window.DeviceOrientationEvent;
+    if (D && typeof D.requestPermission === 'function') {
+      D.requestPermission().then(r => (r === 'granted' ? listen() : fallBackToTouch('Tilt needs motion access, so the joystick is on.')),
+        () => fallBackToTouch('Tilt needs motion access, so the joystick is on.'));
+    } else if (D) listen();
+    else fallBackToTouch('This device has no tilt sensor, so the joystick is on.');
+  } catch (err) { fallBackToTouch('Tilt steering is not available here, so the joystick is on.'); }
+}
+$('recenterBtn').addEventListener('pointerdown', e => { e.preventDefault(); recenterTilt(); showMsg('Tilt re-centered', 1.2); });
+syncSteerUI();
+
 $('startBtn').addEventListener('click', () => {
+  enableTilt();
   initAudio(); $('startScreen').hidden = true; document.activeElement?.blur();
   reset();
-  showMsg('Ghosts are popping up! Hold Space to zap them.', 3);
+  showMsg(steerMode === 'tilt' ? 'Tilt the phone to walk. Hold ZAP to shoot.' : 'Ghosts are popping up! Hold Space to zap them.', 3);
 });
-$('resumeBtn').addEventListener('click', () => { initAudio(); togglePause(); });
+$('resumeBtn').addEventListener('click', () => { enableTilt(); initAudio(); togglePause(); });
 $('againBtn').addEventListener('click', () => {
-  initAudio(); $('winScreen').hidden = true; document.activeElement?.blur();
+  enableTilt(); initAudio(); $('winScreen').hidden = true; document.activeElement?.blur();
   reset(); showMsg('Back on patrol!', 2);
 });
 
@@ -875,9 +974,9 @@ function segPointDist(a, b, p) {
 
 function updatePlayer(dt) {
   const fwd = new V3(-Math.sin(yaw), 0, -Math.cos(yaw)), right = new V3(Math.cos(yaw), 0, -Math.sin(yaw));
-  yaw -= ((keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0)) * 2.4 * dt;
+  yaw -= ((keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0) + tilt.x) * 2.4 * dt;
   let mx = joy.x;
-  let mz = (keys.ArrowUp ? 1 : 0) - (keys.ArrowDown ? 1 : 0) - joy.y;
+  let mz = (keys.ArrowUp ? 1 : 0) - (keys.ArrowDown ? 1 : 0) - joy.y + tilt.y;
   const l = Math.hypot(mx, mz); if (l > 1) { mx /= l; mz /= l; }
   const speed = 9;
   const p = alien.position;
@@ -1230,8 +1329,8 @@ function setupSpace() {
 function updateSpace(dt) {
   spaceT += dt;
   const k = Math.min(1, spaceT / SPACE_TIME);
-  const ix = clamp((keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0) + joy.x, -1, 1);
-  const iy = clamp((keys.ArrowUp ? 1 : 0) - (keys.ArrowDown ? 1 : 0) - joy.y, -1, 1);
+  const ix = clamp((keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0) + joy.x + tilt.x, -1, 1);
+  const iy = clamp((keys.ArrowUp ? 1 : 0) - (keys.ArrowDown ? 1 : 0) - joy.y - tilt.y, -1, 1);
   shipVel2.x += (ix * 16 - shipVel2.x) * Math.min(1, dt * 6);
   shipVel2.y += (iy * 11 - shipVel2.y) * Math.min(1, dt * 6);
   ship.position.x = clamp(ship.position.x + shipVel2.x * dt, -15, 15);
@@ -1442,6 +1541,7 @@ function frame() {
   requestAnimationFrame(frame);
   const dt = Math.min(clock.getDelta(), 0.05);
   clockT += dt;
+  updateTilt();
   if (!paused) {
     updateWorld(dt);
     if (playing()) {
@@ -1495,6 +1595,6 @@ addEventListener('resize', () => {
 alien.position.set(0, 0, 9);
 for (let i = 0; i < 3; i++) { spawnGhost(); ghosts[i].life = 1e9; }
 frame();
-window.__game = { get phase() { return phase; }, get level() { return level; }, get credits() { return credits; }, set credits(v) { credits = v; }, set spaceT(v) { spaceT = v; }, get hearts() { return hearts; }, get houseBusted() { return houseBusted; }, ghosts, elephants, hitGhost, spawnGhost, alien, setupSpace, setupHouse };
+window.__game = { get phase() { return phase; }, get level() { return level; }, get credits() { return credits; }, set credits(v) { credits = v; }, set spaceT(v) { spaceT = v; }, get hearts() { return hearts; }, get houseBusted() { return houseBusted; }, ghosts, elephants, hitGhost, spawnGhost, alien, setupSpace, setupHouse, tilt, updateTilt };
 })();
 </script>
